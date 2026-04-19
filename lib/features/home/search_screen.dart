@@ -1,14 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:remizz/data/song_repository.dart';
-import 'package:remizz/data/download_notifier.dart';
 import 'package:remizz/data/library_repository.dart';
 import 'package:remizz/data/song_model.dart';
 import 'package:remizz/main.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:remizz/core/app_theme.dart';
+import 'package:on_audio_query/on_audio_query.dart';
 
-/// Notifier para gerenciar a consulta de busca
+/// Notifier para gerenciar a consulta de busca local
 class SearchQueryNotifier extends Notifier<String> {
   @override
   String build() => '';
@@ -22,10 +21,16 @@ final searchQueryProvider = NotifierProvider<SearchQueryNotifier, String>(
   SearchQueryNotifier.new,
 );
 
-final searchResultsProvider = FutureProvider<List<Song>>((ref) async {
-  final query = ref.watch(searchQueryProvider);
-  if (query.isEmpty) return [];
-  return await ref.read(songRepositoryProvider).fetchSongs(query: query);
+final filteredLocalSongsProvider = Provider<List<Song>>((ref) {
+  final query = ref.watch(searchQueryProvider).toLowerCase();
+  final allSongs = ref.watch(downloadedSongsProvider);
+  
+  if (query.isEmpty) return allSongs;
+  
+  return allSongs.where((song) {
+    return song.title.toLowerCase().contains(query) || 
+           song.artist.toLowerCase().contains(query);
+  }).toList();
 });
 
 class SearchScreen extends ConsumerWidget {
@@ -33,42 +38,35 @@ class SearchScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final searchResults = ref.watch(searchResultsProvider);
-    final downloadState = ref.watch(downloadProvider);
-    final libraryRepo = ref.watch(libraryRepositoryProvider);
-
-    // Escuta por erros de download para mostrar SnackBar
-    ref.listen(downloadErrorMessageProvider, (previous, next) {
-      if (next != null) {
-        final message = next.toString(); 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(message),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        // Limpa o erro após mostrar
-        ref.read(downloadErrorMessageProvider.notifier).clear();
-      }
-    });
+    final searchResults = ref.watch(filteredLocalSongsProvider);
+    final audioHandler = ref.watch(audioHandlerProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: Row(
           children: [
-            Image.asset('assets/logo.png', height: 32),
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white10, width: 1),
+              ),
+              child: CircleAvatar(
+                radius: 16,
+                backgroundColor: Colors.transparent,
+                backgroundImage: const AssetImage('assets/logo.png'),
+              ),
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: TextField(
                 autofocus: true,
                 decoration: const InputDecoration(
-                  hintText: 'Pesquisar músicas...',
+                  hintText: 'Pesquisar em suas músicas...',
                   border: InputBorder.none,
                   hintStyle: TextStyle(color: Colors.white38),
                 ),
                 style: const TextStyle(color: Colors.white, fontSize: 18),
-                onSubmitted: (value) {
+                onChanged: (value) {
                   ref.read(searchQueryProvider.notifier).setQuery(value);
                 },
               ),
@@ -76,116 +74,76 @@ class SearchScreen extends ConsumerWidget {
           ],
         ),
       ),
-      body: searchResults.when(
-        data: (songs) {
-          if (songs.isEmpty) {
-            return const Center(
-              child: Text('Pesquise por artistas ou músicas', 
-                style: TextStyle(color: Colors.white60)),
-            );
-          }
-          return ListView.builder(
-            itemCount: songs.length,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-            itemBuilder: (context, index) {
-              final song = songs[index];
-              final isDownloaded = libraryRepo.isDownloaded(song.id);
-              final progress = downloadState.progress[song.id];
-              final isDownloading = progress != null;
+      body: searchResults.isEmpty
+          ? Center(
+              child: Text(
+                ref.watch(searchQueryProvider).isEmpty 
+                    ? 'Digite algo para pesquisar' 
+                    : 'Nenhuma música encontrada localmente', 
+                style: const TextStyle(color: Colors.white60)
+              ),
+            )
+          : ListView.builder(
+              itemCount: searchResults.length,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+              itemBuilder: (context, index) {
+                final song = searchResults[index];
 
-              return Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceColor,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  leading: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Image.network(
-                      song.thumbnailUrl,
-                      width: 50,
-                      height: 50,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) => const Icon(Icons.music_note),
-                    ),
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceColor,
+                    borderRadius: BorderRadius.circular(16),
                   ),
-                  title: Text(song.title, 
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                    maxLines: 1, 
-                    overflow: TextOverflow.ellipsis),
-                  subtitle: Text(song.artist, 
-                    style: const TextStyle(color: Colors.white38),
-                    maxLines: 1),
-                  onTap: () async {
-                    if (isDownloaded) {
-                      final handler = ref.read(audioHandlerProvider);
-                      final localSongs = libraryRepo.getDownloadedSongs();
-                      String? path;
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    leading: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: QueryArtworkWidget(
+                        id: int.parse(song.id),
+                        type: ArtworkType.AUDIO,
+                        nullArtworkWidget: Container(
+                          width: 50,
+                          height: 50,
+                          color: Colors.grey[900],
+                          child: const Icon(Icons.music_note, color: Colors.white24),
+                        ),
+                      ),
+                    ),
+                    title: Text(song.title, 
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                      maxLines: 1, 
+                      overflow: TextOverflow.ellipsis),
+                    subtitle: Text(song.artist, 
+                      style: const TextStyle(color: Colors.white38),
+                      maxLines: 1),
+                    onTap: () async {
                       try {
-                        path = localSongs.firstWhere((s) => s.id == song.id).localPath;
-                      } catch (_) {
-                        path = null;
-                      }
+                        final playlist = searchResults.map((s) => MediaItem(
+                          id: s.id,
+                          album: s.album,
+                          title: s.title,
+                          artist: s.artist,
+                          duration: s.duration,
+                          artUri: null,
+                          extras: {'localPath': s.localPath},
+                        )).toList();
 
-                      if (path != null) {
-                        handler.playMediaItem(MediaItem(
-                          id: song.id,
-                          title: song.title,
-                          artist: song.artist,
-                          duration: song.duration,
-                          artUri: Uri.parse(song.thumbnailUrl),
-                          extras: {'localPath': path},
-                        ));
+                        // Sempre atualiza a fila com os resultados da busca
+                        await audioHandler.addQueueItems(playlist);
+                        
+                        final mediaItem = playlist.firstWhere((item) => item.id == song.id);
+                        await audioHandler.playMediaItem(mediaItem);
+                      } catch (e) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Erro ao tocar música: $e')),
+                        );
                       }
-                    } else if (!isDownloading) {
-                      // Se não estiver baixada nem baixando agora, inicia o download
-                      ref.read(downloadProvider.notifier).startDownload(song);
-                    }
-                  },
-                  trailing: _buildTrailing(ref, song, isDownloaded, isDownloading, progress),
-                ),
-              );
-            },
-          );
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Erro: $e')),
-      ),
-    );
-  }
-
-  Widget _buildTrailing(WidgetRef ref, Song song, bool isDownloaded, bool isDownloading, double? progress) {
-    if (isDownloading) {
-      final percentage = ((progress ?? 0) * 100).toInt();
-      return Stack(
-        alignment: Alignment.center,
-        children: [
-          SizedBox(
-            width: 32,
-            height: 32,
-            child: CircularProgressIndicator(
-              value: progress,
-              strokeWidth: 3,
-              backgroundColor: Colors.white10,
-              valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primaryColor),
+                    },
+                  ),
+                );
+              },
             ),
-          ),
-          Text('$percentage', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-        ],
-      );
-    }
-
-    if (isDownloaded) {
-      return const Icon(Icons.check_circle, color: AppTheme.secondaryColor);
-    }
-
-    return IconButton(
-      icon: const Icon(Icons.download_for_offline_rounded, color: Colors.white70),
-      onPressed: () {
-        ref.read(downloadProvider.notifier).startDownload(song);
-      },
     );
   }
 }

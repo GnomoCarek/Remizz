@@ -1,58 +1,76 @@
+import 'package:on_audio_query/on_audio_query.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:remizz/data/song_model.dart';
-
-import 'package:remizz/data/youtube_client.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'dart:io';
 
 class SongRepository {
-  final YoutubeExplode _yt;
+  final OnAudioQuery _audioQuery = OnAudioQuery();
 
-  SongRepository(this._yt);
+  Future<bool> requestPermission() async {
+    if (Platform.isAndroid) {
+      if (await Permission.audio.request().isGranted) return true;
+      if (await Permission.storage.request().isGranted) return true;
+      if (await Permission.manageExternalStorage.request().isGranted) return true;
+    }
+    return true;
+  }
 
-  Future<List<Song>> fetchSongs({String query = 'latest music 2026 hits'}) async {
+  Future<List<Song>> fetchLocalSongs() async {
     try {
-      final searchList = await _yt.search.search(query);
-      
-      final songs = <Song>[];
-      
-      // Limitando a 10 resultados para carregar rápido
-      for (var video in searchList.take(10)) {
-        songs.add(
-          Song(
-            id: video.id.value,
-            title: video.title,
-            artist: video.author,
-            album: 'YouTube Music',
-            audioUrl: '', // Deixamos vazio e pegamos quando for tocar
-            thumbnailUrl: video.thumbnails.standardResUrl.isNotEmpty 
-                ? video.thumbnails.standardResUrl 
-                : video.thumbnails.mediumResUrl,
-            duration: video.duration ?? Duration.zero,
-          ),
+      final hasPermission = await requestPermission();
+      if (!hasPermission) return [];
+
+      final querySongs = await _audioQuery.querySongs(
+        sortType: null,
+        orderType: OrderType.ASC_OR_SMALLER,
+        uriType: UriType.EXTERNAL,
+        ignoreCase: true,
+      );
+
+      final box = Hive.box('settings');
+      final List<String> ignoredPaths = List<String>.from(
+        box.get('ignored_paths', defaultValue: ['whatsapp', 'telegram', 'recorder', 'voice notes'])
+      );
+      final int minDuration = box.get('min_duration', defaultValue: 30);
+
+      return querySongs.where((s) {
+        final path = s.data.toLowerCase();
+        final duration = s.duration ?? 0;
+
+        if (duration < (minDuration * 1000)) return false;
+
+        for (final ignored in ignoredPaths) {
+          if (path.contains(ignored.toLowerCase())) return false;
+        }
+
+        return true;
+      }).map((s) {
+        // Recalculamos ou acessamos a duração aqui dentro do map também
+        final songDuration = s.duration ?? 0;
+        
+        return Song(
+          id: s.id.toString(),
+          title: s.title,
+          artist: s.artist == '<unknown>' ? 'Artista Desconhecido' : (s.artist ?? 'Artista Desconhecido'),
+          album: s.album == '<unknown>' ? 'Álbum Desconhecido' : (s.album ?? 'Álbum Desconhecido'),
+          audioUrl: s.data,
+          thumbnailUrl: '',
+          duration: Duration(milliseconds: songDuration),
+          localPath: s.data,
         );
-      }
-      return songs;
+      }).toList();
     } catch (e) {
       return [];
     }
   }
-
-  Future<String> getAudioUrl(String videoId) async {
-    final manifest = await _yt.videos.streamsClient.getManifest(videoId);
-    final audioStream = manifest.audioOnly.withHighestBitrate();
-    return audioStream.url.toString();
-  }
-
-  void dispose() {
-    _yt.close();
-  }
 }
 
 final songRepositoryProvider = Provider((ref) {
-  final yt = ref.watch(youtubeClientProvider);
-  return SongRepository(yt);
+  return SongRepository();
 });
 
 final songListProvider = FutureProvider((ref) async {
-  return await ref.watch(songRepositoryProvider).fetchSongs();
+  return await ref.watch(songRepositoryProvider).fetchLocalSongs();
 });

@@ -4,6 +4,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:remizz/data/library_repository.dart';
 import 'package:remizz/main.dart';
 import 'package:remizz/core/app_theme.dart';
+import 'package:on_audio_query/on_audio_query.dart';
 
 class LibraryScreen extends ConsumerWidget {
   const LibraryScreen({super.key});
@@ -15,19 +16,30 @@ class LibraryScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Sua Biblioteca', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Músicas Locais', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => ref.read(downloadedSongsProvider.notifier).refresh(),
+          ),
+        ],
       ),
       body: downloadedSongs.isEmpty
-          ? const Center(
+          ? Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.library_music_outlined, size: 64, color: Colors.white24),
-                  SizedBox(height: 16),
-                  Text(
-                    'Nenhuma música baixada ainda.\nUse a busca para baixar suas favoritas!',
+                  const Icon(Icons.library_music_outlined, size: 64, color: Colors.white24),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Nenhuma música encontrada no dispositivo.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.white38),
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: () => ref.read(downloadedSongsProvider.notifier).refresh(),
+                    child: const Text('Escanear Agora'),
                   ),
                 ],
               ),
@@ -47,16 +59,14 @@ class LibraryScreen extends ConsumerWidget {
                     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                     leading: ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        song.thumbnailUrl,
-                        width: 52,
-                        height: 52,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => Container(
+                      child: QueryArtworkWidget(
+                        id: int.parse(song.id),
+                        type: ArtworkType.AUDIO,
+                        nullArtworkWidget: Container(
                           width: 52,
                           height: 52,
                           color: Colors.grey[900],
-                          child: const Icon(Icons.music_note),
+                          child: const Icon(Icons.music_note, color: Colors.white24),
                         ),
                       ),
                     ),
@@ -67,36 +77,28 @@ class LibraryScreen extends ConsumerWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(song.artist, style: const TextStyle(color: Colors.white38)),
-                    trailing: PopupMenuButton<String>(
-                      icon: const Icon(Icons.more_vert, color: Colors.white60),
-                      onSelected: (value) async {
-                        if (value == 'delete') {
-                          await ref.read(downloadedSongsProvider.notifier).removeSong(song.id);
-                        }
-                      },
-                      itemBuilder: (context) => [
-                        const PopupMenuItem(
-                          value: 'delete',
-                          child: Row(
-                            children: [
-                              Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
-                              SizedBox(width: 8),
-                              Text('Remover do dispositivo'),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
                     onTap: () async {
-                      audioHandler.playMediaItem(MediaItem(
-                        id: song.id,
-                        album: song.album,
-                        title: song.title,
-                        artist: song.artist,
-                        duration: song.duration,
-                        artUri: Uri.parse(song.thumbnailUrl),
-                        extras: {'localPath': song.localPath},
-                      ));
+                      try {
+                        final playlist = downloadedSongs.map((s) => MediaItem(
+                          id: s.id,
+                          album: s.album,
+                          title: s.title,
+                          artist: s.artist,
+                          duration: s.duration,
+                          artUri: null,
+                          extras: {'localPath': s.localPath},
+                        )).toList();
+
+                        // Sempre atualiza a fila para refletir a lista da biblioteca
+                        await audioHandler.addQueueItems(playlist);
+                        
+                        final mediaItem = playlist.firstWhere((item) => item.id == song.id);
+                        await audioHandler.playMediaItem(mediaItem);
+                      } catch (e) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Erro ao tocar música: $e')),
+                        );
+                      }
                     },
                   ),
                 );
