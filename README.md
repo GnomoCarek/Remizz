@@ -1,6 +1,4 @@
-# remizz
-
-Remizz
+# Rmizz
 
 O Remizz é um player de música robusto e intuitivo, desenvolvido para oferecer a melhor experiência na execução de arquivos MP3 locais. Com um design moderno e animações fluidas, ele vai além de um simples player, permitindo personalização total e organização inteligente da sua biblioteca.
 
